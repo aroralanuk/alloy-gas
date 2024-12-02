@@ -1,0 +1,21 @@
+[package]
+name = "alloy-gas"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alloy-provider = "0.7.0"
+alloy-consensus = "0.7.0"
+alloy-network = "0.7.0"
+alloy-transport = "0.7.0"
+futures = "0.3"
+derive-new = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+eyre = "0.6.12"
+alloy = "0.7.0"
+alloy-consensus = "0.7.0"
+alloy-provider = { version = "0.7.0", features=["anvil-node"] } 
+
+alloy-rpc-types = "0.7.0"
