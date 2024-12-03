@@ -1,7 +1,9 @@
 use std::{collections::HashMap, future::IntoFuture, sync::{Arc, Mutex}};
-use alloy_network::{Network, TransactionBuilder};
-use alloy_provider::{fillers::{FillerControlFlow, GasFillable, TxFiller}, utils::Eip1559Estimation, Provider, SendableTx};
-use alloy_transport::{Transport, TransportResult};
+use alloy_primitives::B256;
+use alloy_rpc_types::TransactionTrait;
+use alloy_network::{Network, TransactionBuilder, TransactionResponse};
+use alloy_provider::{ext::TxPoolApi,  fillers::{FillerControlFlow, GasFillable, TxFiller}, utils::Eip1559Estimation, Provider, SendableTx};
+use alloy_transport::{RpcError, Transport, TransportResult};
 use futures::FutureExt;
 use derive_new::new; 
 
@@ -44,7 +46,44 @@ impl GasEscalatorFiller {
         }
     }
 
+    pub fn escalator(&self) -> Option<&LinearEscalator> {
+        self.escalator.as_ref()
+    }
+
     // async fn find
+    async fn get_transaction<P, T, N>(
+        &self,
+        provider: &P,
+        tx: &N::TransactionRequest,
+    ) -> TransportResult<Option<B256>>
+    where
+        P: Provider<T, N>,
+        T: Transport + Clone,
+        N: Network,
+    {
+        println!("Tx: {:?}", tx.from());
+        let from = tx.from().ok_or(RpcError::LocalUsageError(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "TransactionRequest missing 'from' field"))))?;
+        let nonce = tx.nonce().ok_or(RpcError::LocalUsageError(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "TransactionRequest missing 'nonce' field"))))?;
+
+        let txpool_content = provider.txpool_content().await?;
+
+        for (sender, txs) in txpool_content.pending {
+            if sender != from {
+                continue;
+            }
+
+            for (_, pending_tx) in txs {
+                if pending_tx.nonce() == nonce {
+                    return Ok(Some(pending_tx.tx_hash()));
+                }
+            }
+        }
+
+        // check for queued
+
+
+        Ok(None)
+    }
 
     async fn prepare_1559<P, T, N>(
         &self,
@@ -56,6 +95,11 @@ impl GasEscalatorFiller {
         T: Transport + Clone,
         N: Network,
     {
+        if let Some(tx_hash) = self.get_transaction(provider, tx).await? {
+            println!("Found transaction in txpool: {:?}", tx_hash);
+        }
+
+
         let gas_limit_fut = tx.gas_limit().map_or_else(
             || provider.estimate_gas(tx).into_future().right_future(),
             |gas_limit| async move { Ok(gas_limit) }.left_future(),
@@ -68,7 +112,7 @@ impl GasEscalatorFiller {
 impl<N: Network> TxFiller<N> for GasEscalatorFiller {
     type Fillable = GasFillable;
 
-    fn status(&self, tx: &<N as Network>::TransactionRequest) -> FillerControlFlow {
+    fn status(&self, _tx: &<N as Network>::TransactionRequest) -> FillerControlFlow {
         FillerControlFlow::Ready
     }
 
@@ -111,7 +155,7 @@ impl<N: Network> TxFiller<N> for GasEscalatorFiller {
 #[cfg(test)]
 mod tests {
     use alloy::primitives::{address, U256};
-    use alloy_provider::ProviderBuilder;
+    use alloy_provider::{ext::AnvilApi, ProviderBuilder, WalletProvider};
     use alloy_rpc_types::TransactionRequest;
     use alloy_network::TransactionBuilder;
 
@@ -124,6 +168,7 @@ mod tests {
 
         let vitalik = address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
         let tx = TransactionRequest::default()
+            .with_from(provider.default_signer_address())
             .with_to(vitalik)
             .with_value(U256::from(125))
             // Notice that without the `NonceFiller`, you need to set `nonce` field.
@@ -131,11 +176,54 @@ mod tests {
             // Notice that without the `ChainIdFiller`, you need to set the `chain_id` field.
             .with_chain_id(provider.get_chain_id().await.unwrap());
 
+        println!("Sender: {:?}", tx.from);
+
 
         // send transaction
         let tx = provider.send_transaction(tx).await.unwrap();
         let receipt = tx.get_receipt().await.unwrap();
 
         println!("Receipt: {:?}, {:?}", receipt.effective_gas_price, receipt.gas_used);
+    }
+
+    #[tokio::test]
+    async fn test_underpriced_stuck_in_txpool() {
+        let filler = GasEscalatorFiller::default();
+        let filler_clone = filler.clone();
+        let provider = ProviderBuilder::new().filler(filler).on_anvil_with_wallet();
+        provider.anvil_set_auto_mine(false).await.unwrap();
+
+        let sender = provider.default_signer_address();
+        let receiver = address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
+
+
+
+        let initial_balance = U256::from(1e18 as u64);
+        provider.anvil_set_balance(sender, initial_balance).await.unwrap();
+
+
+        // Create the first transaction with a low gas price
+        let tx1 = TransactionRequest::default()
+            .with_to(receiver)
+            .with_value(U256::from(125))
+            // Notice that without the `NonceFiller`, you need to set `nonce` field.
+            .with_nonce(0)
+            .with_max_priority_fee_per_gas(1_000)
+            .with_max_fee_per_gas(1_000)
+            // Notice that without the `ChainIdFiller`, you need to set the `chain_id` field.
+            .with_chain_id(provider.get_chain_id().await.unwrap());
+
+        let pending_tx1 = provider.send_transaction(tx1.clone()).await.unwrap();
+        let tx1_hash = *pending_tx1.tx_hash();
+
+        let receipt1 = provider.get_transaction_receipt(tx1_hash).await.unwrap();
+        assert!(
+            receipt1.is_none(),
+            "Transaction1 should be pending and not yet mined"
+        );
+
+
+        let tx_hash = filler_clone.get_transaction(&provider, &tx1).await.unwrap();
+        println!("Tx hash: {:?}", tx_hash);
     }
 }

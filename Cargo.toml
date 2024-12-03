@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+alloy-primitives = "0.8.14"
 alloy-provider = "0.7.0"
 alloy-consensus = "0.7.0"
 alloy-network = "0.7.0"
+alloy-rpc-types = { version = "0.7.0" }
 alloy-transport = "0.7.0"
 futures = "0.3"
 derive-new = "0.7"
@@ -16,6 +18,5 @@ tokio = { version = "1", features = ["full"] }
 eyre = "0.6.12"
 alloy = "0.7.0"
 alloy-consensus = "0.7.0"
-alloy-provider = { version = "0.7.0", features=["anvil-node"] } 
+alloy-provider = { version = "0.7.0", features=["anvil-node", "txpool-api"] } 
 
-alloy-rpc-types = "0.7.0"
