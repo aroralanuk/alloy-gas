@@ -12,6 +12,7 @@ alloy-rpc-types = { version = "0.7.0" }
 alloy-transport = "0.7.0"
 futures = "0.3"
 derive-new = "0.7"
+async-trait = "0.1"         
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }

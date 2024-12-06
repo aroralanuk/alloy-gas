@@ -7,21 +7,23 @@ use alloy_transport::{RpcError, Transport, TransportResult};
 use futures::FutureExt;
 use derive_new::new; 
 
+mod gas_anvil;
 
-#[derive(Clone, Debug, new)]
+
+#[derive(Clone, Debug, Default, new)]
 pub struct LinearEscalator {
     start_bid: u128,             // Starting bid in wei
     increment: u128,             // Increment per block in wei
     max_bid: u128,               // Maximum bid in wei
     start_block: u64,           // Block number to start escalation
     valid_length: u64,          // Duration in blocks
-    current_bid: Arc<Mutex<HashMap<String, u128>>>, // Tracks current bid per transaction
+    current_bid: Arc<Mutex<HashMap<B256, u128>>>, // Tracks current bid per transaction
 }
 
 impl LinearEscalator {
-    pub fn update_bid(&self, tx_id: &str, current_block: u64) -> u128 {
+    pub fn update_bid(&self, tx_id: B256, current_block: u64) -> u128 {
         let mut bids = self.current_bid.lock().unwrap();
-        let bid = bids.entry(tx_id.to_string()).or_insert(self.start_bid);
+        let bid = bids.entry(tx_id).or_insert(self.start_bid);
 
         if current_block >= self.start_block + self.valid_length {
             // Transaction has expired
@@ -36,18 +38,18 @@ impl LinearEscalator {
 
 #[derive(Clone, Debug, Default)]
 pub struct GasEscalatorFiller {
-    escalator: Option<LinearEscalator>,
+    escalator: LinearEscalator,
 }
 
 impl GasEscalatorFiller {
     pub fn with_escalator(escalator: LinearEscalator) -> Self {
         Self {
-            escalator: Some(escalator),
+            escalator,
         }
     }
 
-    pub fn escalator(&self) -> Option<&LinearEscalator> {
-        self.escalator.as_ref()
+    pub fn escalator(&self) -> &LinearEscalator {
+        &self.escalator
     }
 
     // async fn find
@@ -61,7 +63,6 @@ impl GasEscalatorFiller {
         T: Transport + Clone,
         N: Network,
     {
-        println!("Tx: {:?}", tx.from());
         let from = tx.from().ok_or(RpcError::LocalUsageError(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "TransactionRequest missing 'from' field"))))?;
         let nonce = tx.nonce().ok_or(RpcError::LocalUsageError(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidInput, "TransactionRequest missing 'nonce' field"))))?;
 
@@ -95,9 +96,15 @@ impl GasEscalatorFiller {
         T: Transport + Clone,
         N: Network,
     {
-        if let Some(tx_hash) = self.get_transaction(provider, tx).await? {
-            println!("Found transaction in txpool: {:?}", tx_hash);
-        }
+
+        let eip1559_fees_fut = if let (Some(max_fee_per_gas), Some(max_priority_fee_per_gas)) =
+            (tx.max_fee_per_gas(), tx.max_priority_fee_per_gas())
+        {
+            async move { Ok(Eip1559Estimation { max_fee_per_gas, max_priority_fee_per_gas }) }
+                .left_future()
+        } else {
+            provider.estimate_eip1559_fees(None).right_future()
+        };
 
 
         let gas_limit_fut = tx.gas_limit().map_or_else(
@@ -105,14 +112,65 @@ impl GasEscalatorFiller {
             |gas_limit| async move { Ok(gas_limit) }.left_future(),
         );
 
-        Ok(GasFillable::Eip1559 { gas_limit: gas_limit_fut.await?, estimate: Eip1559Estimation { max_fee_per_gas: 10_000_000_000, max_priority_fee_per_gas: 7_200_000_000 } })
+        let (gas_limit, default_estimate) = futures::try_join!(gas_limit_fut, eip1559_fees_fut)?;
+        let base_fee = default_estimate.max_fee_per_gas - default_estimate.max_priority_fee_per_gas;
+        // 10% increase minimum recommended by RPC providers
+        let replacement_fee = (default_estimate.max_fee_per_gas * 110) / 100;
+        let replacement_priority_fee = replacement_fee - base_fee;
+
+        let estimate = if let Some(tx_hash) = self.get_transaction(provider, tx).await? {
+            let current_block = provider.get_block_number().await?;
+            let current_bid = {
+                let bids = self.escalator.current_bid.lock().unwrap();
+                bids.get(&tx_hash).copied()
+            };
+
+            let new_bid = if let Some(existing_bid) = current_bid {
+                existing_bid  // Don't update if we already have a bid
+            } else {
+                self.escalator.update_bid(tx_hash, current_block)
+            };
+            
+            let max_priority_fee_per_gas = std::cmp::max(new_bid, replacement_priority_fee);
+            let max_fee_per_gas = base_fee + max_priority_fee_per_gas;
+
+            println!(
+                "Retrying transaction {} with increased bid: {} wei",
+                tx_hash, new_bid
+            );
+
+            Eip1559Estimation {
+                max_fee_per_gas,
+                max_priority_fee_per_gas,
+            }
+        } else {
+            default_estimate
+        };
+
+        println!("🚀 Gas Estimate: {:?}", estimate);
+
+        Ok(GasFillable::Eip1559 { gas_limit, estimate })
     }
 }
 
 impl<N: Network> TxFiller<N> for GasEscalatorFiller {
     type Fillable = GasFillable;
 
-    fn status(&self, _tx: &<N as Network>::TransactionRequest) -> FillerControlFlow {
+    // from gas.rs
+    fn status(&self, tx: &<N as Network>::TransactionRequest) -> FillerControlFlow {
+        // legacy and eip2930 tx
+        if tx.gas_price().is_some() && tx.gas_limit().is_some() {
+            return FillerControlFlow::Finished;
+        }
+
+        // eip1559
+        if tx.max_fee_per_gas().is_some()
+            && tx.max_priority_fee_per_gas().is_some()
+            && tx.gas_limit().is_some()
+        {
+            return FillerControlFlow::Finished;
+        }
+
         FillerControlFlow::Ready
     }
 
@@ -154,76 +212,6 @@ impl<N: Network> TxFiller<N> for GasEscalatorFiller {
 
 #[cfg(test)]
 mod tests {
-    use alloy::primitives::{address, U256};
-    use alloy_provider::{ext::AnvilApi, ProviderBuilder, WalletProvider};
-    use alloy_rpc_types::TransactionRequest;
-    use alloy_network::TransactionBuilder;
-
-    use super::*;
-
-    #[tokio::test]  
-    async fn test_gas_escalator_filler() {
-        let filler = GasEscalatorFiller::default();
-        let provider = ProviderBuilder::new().filler(filler).on_anvil_with_wallet();
-
-        let vitalik = address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
-        let tx = TransactionRequest::default()
-            .with_from(provider.default_signer_address())
-            .with_to(vitalik)
-            .with_value(U256::from(125))
-            // Notice that without the `NonceFiller`, you need to set `nonce` field.
-            .with_nonce(0)
-            // Notice that without the `ChainIdFiller`, you need to set the `chain_id` field.
-            .with_chain_id(provider.get_chain_id().await.unwrap());
-
-        println!("Sender: {:?}", tx.from);
-
-
-        // send transaction
-        let tx = provider.send_transaction(tx).await.unwrap();
-        let receipt = tx.get_receipt().await.unwrap();
-
-        println!("Receipt: {:?}, {:?}", receipt.effective_gas_price, receipt.gas_used);
-    }
-
-    #[tokio::test]
-    async fn test_underpriced_stuck_in_txpool() {
-        let filler = GasEscalatorFiller::default();
-        let filler_clone = filler.clone();
-        let provider = ProviderBuilder::new().filler(filler).on_anvil_with_wallet();
-        provider.anvil_set_auto_mine(false).await.unwrap();
-
-        let sender = provider.default_signer_address();
-        let receiver = address!("d8dA6BF26964aF9D7eEd9e03E53415D37aA96045");
-
-
-
-        let initial_balance = U256::from(1e18 as u64);
-        provider.anvil_set_balance(sender, initial_balance).await.unwrap();
-
-
-        // Create the first transaction with a low gas price
-        let tx1 = TransactionRequest::default()
-            .with_to(receiver)
-            .with_value(U256::from(125))
-            // Notice that without the `NonceFiller`, you need to set `nonce` field.
-            .with_nonce(0)
-            .with_max_priority_fee_per_gas(1_000)
-            .with_max_fee_per_gas(1_000)
-            // Notice that without the `ChainIdFiller`, you need to set the `chain_id` field.
-            .with_chain_id(provider.get_chain_id().await.unwrap());
-
-        let pending_tx1 = provider.send_transaction(tx1.clone()).await.unwrap();
-        let tx1_hash = *pending_tx1.tx_hash();
-
-        let receipt1 = provider.get_transaction_receipt(tx1_hash).await.unwrap();
-        assert!(
-            receipt1.is_none(),
-            "Transaction1 should be pending and not yet mined"
-        );
-
-
-        let tx_hash = filler_clone.get_transaction(&provider, &tx1).await.unwrap();
-        println!("Tx hash: {:?}", tx_hash);
-    }
+    mod esclator_tests;
 }
+
