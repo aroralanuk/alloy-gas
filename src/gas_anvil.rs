@@ -1,9 +1,11 @@
+use core::time;
 use std::sync::{Arc, Mutex};
+use alloy_consensus::BlockHeader;
 
-use alloy_network::{Network, TransactionBuilder};
+use alloy_network::{BlockResponse, Network, TransactionBuilder};
 use alloy_primitives::{B256, U256};
 use alloy_provider::{ext::{AnvilApi, TxPoolApi}, Provider, ProviderBuilder, WalletProvider};
-use alloy_rpc_types::{TransactionRequest, TransactionTrait};
+use alloy_rpc_types::{BlockNumberOrTag, BlockTransactionsKind, TransactionRequest, TransactionTrait};
 use alloy_transport::{RpcError, Transport, TransportResult};
 
 #[derive(Clone)]
@@ -34,11 +36,12 @@ impl GasAnvil {
         });
     }
 
-    pub async fn mine<P, T, N>(&self, provider: &P, tx_hash: B256) -> TransportResult<()>
+    pub async fn mine<P, T, N>(&self, provider: &P, tx_hash: B256, transaction_request: TransactionRequest) -> TransportResult<()>
     where
         P: Provider<T, N> + AnvilApi<N, T> + WalletProvider,
         T: Transport + Clone + Send + Sync,
         N: Network,
+        <N as Network>::TransactionRequest: From<TransactionRequest>,
     {
         let config = {
             let config_guard = self.config.lock().unwrap();
@@ -59,18 +62,12 @@ impl GasAnvil {
                 provider.anvil_mine(Some(U256::from(1)), None).await.unwrap();
                 println!("Mined transaction {:?}", tx_hash);
             } else {
-                // provider.raw_request::<(U256,), bool>("anvil_setBlockNumber".into(), (U256::from(1),)).await.unwrap();
-                provider.anvil_mine(Some(U256::from(1)), None).await?;
-                // let block = provider.get_block_by_number(BlockNumberOrTag::Latest, BlockTransactionsKind::Hashes)
-                // .await?
-                // .unwrap();
-                // let current_timestamp = block.header.timestamp;
-                // provider.anvil_set_next_block_timestamp(current_timestamp + 1).await?;
-                // // Mine empty block to increase block number
-                // provider.evm_mine(Some(MineOptions::Options {
-                //     timestamp: None,
-                //     blocks: Some(1),
-                // })).await?;
+                provider.anvil_drop_transaction(tx_hash).await.unwrap();
+                provider.anvil_mine(None, None).await.unwrap();
+
+                // provider.
+                let _tx = provider.eth_send_unsigned_transaction(transaction_request.into()).await.unwrap();
+
                 println!("Transaction {:?} does not meet the gas requirements.", tx_hash);
             }
            

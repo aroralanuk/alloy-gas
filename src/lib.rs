@@ -1,7 +1,8 @@
 use std::{collections::HashMap, future::IntoFuture, sync::{Arc, Mutex}};
 use alloy_primitives::B256;
-use alloy_rpc_types::TransactionTrait;
-use alloy_network::{Network, TransactionBuilder, TransactionResponse};
+use alloy_rpc_types::{BlockNumberOrTag, BlockTransactionsKind, TransactionTrait};
+use alloy_consensus::BlockHeader;
+use alloy_network::{BlockResponse, Network, TransactionBuilder, TransactionResponse};
 use alloy_provider::{ext::TxPoolApi,  fillers::{FillerControlFlow, GasFillable, TxFiller}, utils::Eip1559Estimation, Provider, SendableTx};
 use alloy_transport::{RpcError, Transport, TransportResult};
 use futures::FutureExt;
@@ -17,22 +18,27 @@ pub struct LinearEscalator {
     max_bid: u128,               // Maximum bid in wei
     start_block: u64,           // Block number to start escalation
     valid_length: u64,          // Duration in blocks
-    current_bid: Arc<Mutex<HashMap<B256, u128>>>, // Tracks current bid per transaction
+    current_bid: Arc<Mutex<u128>>, // Tracks current bid per transaction 
 }
 
 impl LinearEscalator {
-    pub fn update_bid(&self, tx_id: B256, current_block: u64) -> u128 {
-        let mut bids = self.current_bid.lock().unwrap();
-        let bid = bids.entry(tx_id).or_insert(self.start_bid);
+    pub fn update_bid(&self, current_block: u64) -> u128 {
+        let mut current_bid = self.current_bid.lock().unwrap();
 
         if current_block >= self.start_block + self.valid_length {
             // Transaction has expired
-            *bid = 0;
+            *current_bid = 0;
         } else {
-            *bid = std::cmp::min(*bid + self.increment, self.max_bid);
+            let blocks_passed = current_block.saturating_sub(self.start_block);
+            let increment = (blocks_passed as u128) * self.increment;
+            *current_bid = std::cmp::min(self.start_bid + increment, self.max_bid);
         }
 
-        *bid
+        *current_bid
+    }
+
+    pub fn current_bid(&self) -> u128 {
+        *self.current_bid.lock().unwrap()
     }
 }
 
@@ -96,7 +102,6 @@ impl GasEscalatorFiller {
         T: Transport + Clone,
         N: Network,
     {
-
         let eip1559_fees_fut = if let (Some(max_fee_per_gas), Some(max_priority_fee_per_gas)) =
             (tx.max_fee_per_gas(), tx.max_priority_fee_per_gas())
         {
@@ -105,7 +110,6 @@ impl GasEscalatorFiller {
         } else {
             provider.estimate_eip1559_fees(None).right_future()
         };
-
 
         let gas_limit_fut = tx.gas_limit().map_or_else(
             || provider.estimate_gas(tx).into_future().right_future(),
@@ -119,17 +123,14 @@ impl GasEscalatorFiller {
         let replacement_priority_fee = replacement_fee - base_fee;
 
         let estimate = if let Some(tx_hash) = self.get_transaction(provider, tx).await? {
+            let current_bid = self.escalator.current_bid();
+            let bid_block = self.escalator.start_block + ((current_bid - self.escalator.start_bid) / self.escalator.increment) as u64;
             let current_block = provider.get_block_number().await?;
-            println!("🚀 current_block: {:?}", current_block);
-            let current_bid = {
-                let bids = self.escalator.current_bid.lock().unwrap();
-                bids.get(&tx_hash).copied()
-            };
 
-            let new_bid = if let Some(existing_bid) = current_bid {
-                existing_bid  // Don't update if we already have a bid
+            let new_bid = if current_block != bid_block {
+                self.escalator.update_bid(current_block)
             } else {
-                self.escalator.update_bid(tx_hash, current_block)
+                current_bid
             };
             
             let max_priority_fee_per_gas = std::cmp::max(new_bid, replacement_priority_fee);
