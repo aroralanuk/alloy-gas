@@ -12,10 +12,12 @@ alloy-rpc-types = { version = "0.7.0" }
 alloy-transport = "0.7.0"
 futures = "0.3"
 derive-new = "0.7"
-async-trait = "0.1"         
+async-trait = "0.1"   
+tokio = { version = "1", features = ["full"] }
+alloy-rpc-types-anvil = "0.7.0"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["full"] }
+
 eyre = "0.6.12"
 alloy = "0.7.0"
 alloy-consensus = "0.7.0"

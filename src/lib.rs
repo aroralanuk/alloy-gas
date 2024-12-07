@@ -120,6 +120,7 @@ impl GasEscalatorFiller {
 
         let estimate = if let Some(tx_hash) = self.get_transaction(provider, tx).await? {
             let current_block = provider.get_block_number().await?;
+            println!("🚀 current_block: {:?}", current_block);
             let current_bid = {
                 let bids = self.escalator.current_bid.lock().unwrap();
                 bids.get(&tx_hash).copied()
