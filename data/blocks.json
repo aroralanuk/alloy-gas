@@ -1,0 +1,32 @@
+[
+  {
+    "block_hash": "0x9cdfb51b1cdb1862a124ccd1ff403b5e539e4625c752bf1ec0bdc04985f231d0",
+    "author": "0x4200000000000000000000000000000000000011",
+    "block_number": 12349000,
+    "gas_used": 4220053,
+    "extra_data": "0x",
+    "timestamp": 1711487347,
+    "base_fee_per_gas": 11266321389,
+    "chain_id": 8453
+  },
+  {
+    "block_hash": "0xd2f2a92a016a374d239027a40939c9cba3e3270ba17d3978be4d2451c7149eaf",
+    "author": "0x4200000000000000000000000000000000000011",
+    "block_number": 12349001,
+    "gas_used": 4222821,
+    "extra_data": "0x",
+    "timestamp": 1711487349,
+    "base_fee_per_gas": 11259291683,
+    "chain_id": 8453
+  },
+  {
+    "block_hash": "0x816c283fdbf5730da92f38285c5cc2b80ced3d66c3499a3602afe91c41e9f3bc",
+    "author": "0x4200000000000000000000000000000000000011",
+    "block_number": 12349002,
+    "gas_used": 4633169,
+    "extra_data": "0x",
+    "timestamp": 1711487351,
+    "base_fee_per_gas": 11252291295,
+    "chain_id": 8453
+  }
+]

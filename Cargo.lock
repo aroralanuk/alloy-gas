@@ -181,6 +181,8 @@ dependencies = [
  "derive-new",
  "eyre",
  "futures",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

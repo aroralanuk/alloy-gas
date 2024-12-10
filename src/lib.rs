@@ -215,5 +215,6 @@ impl<N: Network> TxFiller<N> for GasEscalatorFiller {
 #[cfg(test)]
 mod tests {
     mod esclator_tests;
+    mod simulation_tests;
 }
 
