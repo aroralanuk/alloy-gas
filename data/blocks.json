@@ -1,32 +1,32 @@
 [
   {
-    "block_hash": "0x9cdfb51b1cdb1862a124ccd1ff403b5e539e4625c752bf1ec0bdc04985f231d0",
-    "author": "0x4200000000000000000000000000000000000011",
-    "block_number": 12349000,
-    "gas_used": 4220053,
-    "extra_data": "0x",
-    "timestamp": 1711487347,
-    "base_fee_per_gas": 11266321389,
-    "chain_id": 8453
+    "block_hash": "0x7dc23cef166ff1174da303a57a04bf4ab2ed88c4b8742b9b1736f73c85793ae4",
+    "author": "0x4838b106fce9647bdf1e7877bf73ce8b0bad5f97",
+    "block_number": 21417378,
+    "gas_used": 16746523,
+    "extra_data": "0x546974616e2028746974616e6275696c6465722e78797a29",
+    "timestamp": 1734379775,
+    "base_fee_per_gas": 21998855281,
+    "chain_id": 1
   },
   {
-    "block_hash": "0xd2f2a92a016a374d239027a40939c9cba3e3270ba17d3978be4d2451c7149eaf",
-    "author": "0x4200000000000000000000000000000000000011",
-    "block_number": 12349001,
-    "gas_used": 4222821,
-    "extra_data": "0x",
-    "timestamp": 1711487349,
-    "base_fee_per_gas": 11259291683,
-    "chain_id": 8453
+    "block_hash": "0xe874ee5a20a13785df00a34646b3d79a732e11e58053caeab0869b87488408b7",
+    "author": "0x4838b106fce9647bdf1e7877bf73ce8b0bad5f97",
+    "block_number": 21417379,
+    "gas_used": 14979644,
+    "extra_data": "0x546974616e2028746974616e6275696c6465722e78797a29",
+    "timestamp": 1734379787,
+    "base_fee_per_gas": 22319034503,
+    "chain_id": 1
   },
   {
-    "block_hash": "0x816c283fdbf5730da92f38285c5cc2b80ced3d66c3499a3602afe91c41e9f3bc",
-    "author": "0x4200000000000000000000000000000000000011",
-    "block_number": 12349002,
-    "gas_used": 4633169,
-    "extra_data": "0x",
-    "timestamp": 1711487351,
-    "base_fee_per_gas": 11252291295,
-    "chain_id": 8453
+    "block_hash": "0xcf3c61779afd5900cceca7f20a23fd5343a369cefab2033a7f400a76d9707c11",
+    "author": "0x3ca601b21d62790308298e3274fd852669fdfc08",
+    "block_number": 21417380,
+    "gas_used": 5619799,
+    "extra_data": "0x4e65746865726d696e64",
+    "timestamp": 1734379799,
+    "base_fee_per_gas": 22315248451,
+    "chain_id": 1
   }
 ]

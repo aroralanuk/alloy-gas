@@ -1,6 +1,7 @@
+use std::cmp::Ordering;
 use std::sync::{Arc, Mutex};
 use std::{fs::File, io::BufReader};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 
 use alloy_primitives::{address, utils, Address, U256};
 use alloy_provider::fillers::{GasFiller, TxFiller};
@@ -28,6 +29,47 @@ struct TransactionData {
     gas_price: u128,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+enum TxStrategy {
+    Naive,
+    Escalator,
+}
+
+#[allow(dead_code)]
+#[derive(Debug)]
+struct PendingTransaction {
+    tx_request: TransactionRequest,
+    block_number: u64,
+    strategy: TxStrategy,
+}
+
+impl PendingTransaction {
+    fn priority_fee(&self) -> u128 {
+        self.tx_request.max_priority_fee_per_gas.unwrap_or(0)
+    }
+}
+
+impl PartialEq for PendingTransaction {
+    fn eq(&self, other: &Self) -> bool {
+        self.priority_fee() == other.priority_fee()
+    }
+}
+
+impl PartialOrd for PendingTransaction {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.priority_fee().cmp(&other.priority_fee()))
+    }
+}
+
+impl Eq for PendingTransaction {}
+
+impl Ord for PendingTransaction {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.priority_fee().cmp(&other.priority_fee())
+    }
+}
+
 fn load_transaction_data(path: &str) -> Vec<TransactionData> {
     let file = File::open(path).expect("Failed to open transaction data file");
     let reader = BufReader::new(file);
@@ -43,16 +85,16 @@ fn load_block_fee_data(path: &str) -> Vec<BlockFeeData> {
 #[tokio::test]
 async fn simulate_gas_escalator() {
     // Load block data from JSON file
-    let raw_transactions = load_transaction_data("data/transactions.json");
-    let block_fee_data = load_block_fee_data("data/blocks.json");
+    // let raw_transactions = load_transaction_data("data/transactions.json");
+    // let block_fee_data = load_block_fee_data("data/blocks.json");
     
-    
+    let raw_transactions = load_transaction_data("data/cleaned_transactions_1000.json");
+    let block_fee_data = load_block_fee_data("data/blocks_1000.json");
 
     let mut blocks:HashMap<u64, (u128, Vec<TransactionData>)> = HashMap::new();
     for &block in &block_fee_data {
         blocks.entry(block.block_number).or_insert((block.base_fee_per_gas, Vec::new()));
     }
-    println!("blocks: {:?}", blocks);
 
 
     for tx in raw_transactions {
@@ -71,7 +113,6 @@ async fn simulate_gas_escalator() {
 
     for &block_number in &sorted_block_numbers {
         let block_info = &blocks.get(&block_number).unwrap();
-        println!("block_info len: {:?} {:?}", block_info.1.len(), block_info.0);
         let mut tips: Vec<u128> = block_info.1.iter().filter_map(|tx| {
             if tx.gas_price >= block_info.0 {
                 Some(tx.gas_price - block_info.0)
@@ -111,39 +152,74 @@ async fn simulate_gas_escalator() {
     let mut block_numbers: Vec<u64> = blocks.keys().cloned().collect();
     block_numbers.sort();
 
-    let mut pending_regular = VecDeque::new();
-    // let mut pending_escalator = VecDeque::new();
+    let simulation_start_block = block_numbers[1];
+    let simulation_end_block = simulation_start_block + 999;
+    let mut pending_transactions_naive = BinaryHeap::new();
+    // let mut pending_transactions_escalator = BinaryHeap::new();
+    let mut results_naive = Vec::new();
+    // let mut results_escalator = Vec::new();
 
-    for &block_number in &block_numbers {
-        let (base_fee, block_txs) = &blocks.get(&block_number).unwrap();
+    for current_block in simulation_start_block..simulation_end_block {
+        let (_, block_txs) = &blocks.get(&current_block).unwrap();
         if block_txs.len() == 0 {
             continue;
         }
 
-        if pending_regular.is_empty()  {
-            // let fee_history = simple_provider
-            // .get_fee_history(
-            //     10,
-            //     BlockNumberOrTag::Latest,
-            //     &[20.0],
-            // )
-            // .await.unwrap();
+        
+        // let fee_history = simple_provider
+        // .get_fee_history(
+        //     10,
+        //     BlockNumberOrTag::Latest,
+        //     &[20.0],
+        // )
+        // .await.unwrap();
 
-            
-            let max_fee_per_gas = 2 * base_fee;
-            let max_priority_fee_per_gas = max_fee_per_gas + priority_fee_data.get(&block_number).unwrap();
-            println!("max_fee_per_gas: {:?} {:?} {:?}", max_fee_per_gas, max_priority_fee_per_gas, priority_fee_data.get(&block_number).unwrap());
+        
+        let previous_block = current_block - 1;
+        
+        let max_priority_fee_per_gas = *priority_fee_data.get(&previous_block).unwrap();
+        let max_fee_per_gas = 2 * &blocks.get(&previous_block).unwrap().0 + max_priority_fee_per_gas;
+        println!("max_fee_per_gas: {:?} {:?}", max_fee_per_gas, max_priority_fee_per_gas);
 
-            // Create the transaction request
-            let tx_request = create_test_tx(&simple_provider, max_fee_per_gas, max_priority_fee_per_gas).await;
-            let fillable = simple_filler.prepare(&simple_provider, &tx_request).await.unwrap();
-            println!("fillable: {:?}", fillable);
-            pending_regular.push_back((tx_request, block_number));
+        let tx_request_naive = create_test_tx(&simple_provider, max_fee_per_gas, max_priority_fee_per_gas).await;
+
+        pending_transactions_naive.push(PendingTransaction {
+            tx_request: tx_request_naive,
+            block_number: current_block,
+            strategy: TxStrategy::Naive,
+        });
+
+        while let Some(pending_tx) = pending_transactions_naive.pop() {
+            if let Some((base_fee, txs)) = blocks.get(&current_block) {
+                if would_be_included((base_fee, txs), pending_tx.tx_request.max_fee_per_gas.unwrap_or(0), pending_tx.priority_fee() 
+            ) {
+                    println!("would be included in block {:?}", current_block);
+                    results_naive.push((current_block, pending_tx.priority_fee()));
+                    continue;
+                } else {
+                    println!("not included in block {:?}", current_block);
+                    pending_transactions_naive.push(pending_tx);
+                    break;
+                }
+            } 
         }
-        // if pending_escalator.is_empty() {
     }
 
-    
+    fn would_be_included(block: (&u128, &Vec<TransactionData>), base_fee: u128, priority_fee: u128) -> bool {
+        let (block_fee, included_txs) = block;
+        let mut sorted_txs = included_txs.clone();
+        sorted_txs.sort_by(|a, b| b.gas_price.cmp(&a.gas_price));
+        if *block_fee > base_fee {
+            return false;
+        }
+        
+        for tx in sorted_txs {
+            if priority_fee >= (tx.gas_price - block_fee) {
+                return true;
+            }
+        }
+        false
+    }
 
         
 
@@ -159,3 +235,4 @@ async fn create_test_tx<P: Provider + WalletProvider>(provider: &P, max_fee_per_
         .with_nonce(0)
         .with_chain_id(provider.get_chain_id().await.unwrap())
 }
+
